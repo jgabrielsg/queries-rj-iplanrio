@@ -1,3 +1,7 @@
+{{
+  config(alias="nf_cancelamento")
+}}
+
 WITH
   extracao_chave AS (
     SELECT DISTINCT
@@ -5,7 +9,7 @@ WITH
       cnpj_modelo_normalizado AS cnpj_modelo,
       numero_nf_modelo_norm AS numero_nf_modelo
     FROM {{ ref("core_cgm_triagem_nf__extracao_pagina") }}
-    WHERE numero_documento IS NOT NULL AND cnpj_emitente IS NOT NULL
+    WHERE numero_nf_modelo_norm IS NOT NULL AND cnpj_emitente IS NOT NULL
   ),
 
   smf_nf_substituta_norm AS (
@@ -13,7 +17,7 @@ WITH
       *,
       LPAD(REGEXP_REPLACE(SAFE_CAST(cnpj_cpf_modelo AS STRING), r'[^0-9]', ''), 14, '0')
         AS cleaned_cnpj_modelo
-    FROM `rj-nf-agent.poc_osinfo_ia.smf_nf_cancelada_substituta_20260311`
+    FROM {{ source("poc_osinfo_ia", "smf_nf_cancelada_substituta_20260311") }}
   ),
 
   smf_nf_verificacao_norm AS (
@@ -23,7 +27,7 @@ WITH
       achei_nota_fiscal,
       data_cancelamento,
       LPAD(REGEXP_REPLACE(SAFE_CAST(cnpj AS STRING), r'[^0-9]', ''), 14, '0') AS cleaned_cnpj
-    FROM `rj-nf-agent.brutos_smf.nf_verificacao_20260304`
+    FROM {{ source("brutos_smf", "nf_verificacao_20260304") }}
     WHERE achei_nota_fiscal IS NOT NULL
     QUALIFY
       ROW_NUMBER() OVER (PARTITION BY cnpj, nfse ORDER BY data_cancelamento IS NOT NULL DESC) = 1

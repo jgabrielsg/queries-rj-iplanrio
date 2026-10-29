@@ -1,14 +1,18 @@
+{{
+  config(alias="osinfo_despesas")
+}}
+
 WITH
   despesas_norm AS (
     SELECT
-      * EXCEPT (num_documento),
+      *,
       REGEXP_REPLACE(descricao, r'(?i)\.pdf$', '') AS nome_arquivo,
       LPAD(REGEXP_REPLACE(COALESCE(cpf, cnpj), r'[^0-9]', ''), 14, '0')
         AS cnpj_cpf_normalizado,
       num_documento AS numero_documento,
       SAFE_CAST(REGEXP_REPLACE(CAST(num_documento AS STRING), r'[^0-9]', '') AS INT64)
         AS numero_documento_norm
-    FROM `rj-cvl.adm_contrato_gestao.despesas`
+    FROM {{ source("adm_contrato_gestao", "despesas") }}
     WHERE
       id_tipo_documento = "1"
       AND data_envio BETWEEN DATE("2021-11-01") AND DATE("2026-08-31")
@@ -42,14 +46,14 @@ WITH
                 '-', '/'))
         ELSE NULL
         END AS periodo_vigencia_contrato
-    FROM `rj-cvl.adm_contrato_gestao.secretaria` s
-    LEFT JOIN `rj-cvl.adm_contrato_gestao.contrato` c
+    FROM {{ source("adm_contrato_gestao", "secretaria") }} s
+    LEFT JOIN {{ source("adm_contrato_gestao", "contrato") }} c
       USING (id_secretaria)
   ),
 
   administracao_unidade AS (
     SELECT cod_unidade, nome_fantasia
-    FROM `rj-cvl.adm_contrato_gestao.administracao_unidade`
+    FROM {{ source("adm_contrato_gestao", "administracao_unidade") }}
   )
 
 SELECT
@@ -66,3 +70,7 @@ LEFT JOIN administracao_unidade uni
   ON uni.cod_unidade = d.cod_unidade
 LEFT JOIN administracao_unidade org
   ON org.cod_unidade = d.cod_organizacao
+-- TODO: 10.286 casos com `numero_documento` nulo, por ora ignorados na view:
+WHERE d.numero_documento IS NOT NULL
+-- TODO: 1.021 casos com `cnpj_cpf_normalizado` nulo, por ora ignorados na view:
+AND  d.cnpj_cpf_normalizado IS NOT NULL

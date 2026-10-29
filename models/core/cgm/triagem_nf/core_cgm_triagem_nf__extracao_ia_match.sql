@@ -1,31 +1,83 @@
+{{
+  config(alias="extracao_ia_match")
+}}
+
 WITH
+  despesas_base AS (
+    SELECT
+      od.id_documento,
+      od.nome_arquivo,
+      od.numero_documento_norm,
+      od.cnpj_cpf_normalizado,
+      od.valor_documento,
+      {{ tratar_numero_documento("od.numero_documento") }} AS candidatos_numero
+    FROM {{ ref("core_cgm_triagem_nf__osinfo_despesas") }} od
+  ),
+
+  paginas_base AS (
+    SELECT
+      p.nome_arquivo,
+      p.pagina,
+      p.numero_documento,
+      p.numero_nf_modelo_norm,
+      p.cnpj_modelo_normalizado,
+      p.cnpj_emitente,
+      p.valor_documento,
+      p.data_emissao_documento,
+      p.tipo_documento_extracao,
+      {{ tratar_numero_documento("p.numero_documento") }} AS candidatos_numero
+    FROM {{ ref("core_cgm_triagem_nf__extracao_pagina") }} p
+  ),
+
+  -- Pares despesa x página com mesmo CNPJ e número igual (exato) ou com
+  -- interseção entre os radicais tratados do número (macro tratar_numero_documento)
+  pares_match_bruto AS (
+    SELECT
+      d.id_documento,
+      p.nome_arquivo,
+      p.pagina,
+      COALESCE(d.numero_documento_norm = p.numero_nf_modelo_norm, FALSE) AS match_exato
+    FROM despesas_base d
+    INNER JOIN paginas_base p
+      ON p.nome_arquivo = d.nome_arquivo
+     AND p.cnpj_modelo_normalizado = d.cnpj_cpf_normalizado
+    WHERE
+      COALESCE(d.numero_documento_norm = p.numero_nf_modelo_norm, FALSE)
+      OR EXISTS (
+        SELECT 1
+        FROM UNNEST(d.candidatos_numero) AS num_d
+        INNER JOIN UNNEST(p.candidatos_numero) AS num_p
+          ON num_d = num_p
+      )
+  ),
+
+  -- O match tratado só vale para despesas sem nenhum match exato no arquivo
+  pares_match AS (
+    SELECT id_documento, nome_arquivo, pagina
+    FROM pares_match_bruto
+    QUALIFY match_exato OR NOT LOGICAL_OR(match_exato) OVER (PARTITION BY id_documento)
+  ),
+
   match_por_declaracao_valor AS (
     SELECT
       od.id_documento,
-      LOGICAL_OR(
-        COALESCE(
-          p.numero_nf_modelo_norm = od.numero_documento_norm
-            AND p.cnpj_modelo_normalizado = od.cnpj_cpf_normalizado,
-          FALSE)) AS tem_match
+      LOGICAL_OR(pm.id_documento IS NOT NULL) AS tem_match
     FROM {{ ref("core_cgm_triagem_nf__osinfo_despesas") }} od
     INNER JOIN {{ ref("core_cgm_triagem_nf__extracao_pagina") }} p
       ON p.nome_arquivo = od.nome_arquivo
-    WHERE p.numero_documento IS NOT NULL AND p.cnpj_emitente IS NOT NULL
+    LEFT JOIN pares_match pm
+      ON pm.id_documento = od.id_documento
+     AND pm.pagina = p.pagina
     GROUP BY od.id_documento
   ),
 
-  od_agrupado AS (
+  pares_agrupado AS (
     SELECT
       nome_arquivo,
-      numero_documento_norm,
-      cnpj_cpf_normalizado,
+      pagina,
       ARRAY_AGG(id_documento ORDER BY id_documento) AS id_documentos
-    FROM {{ ref("core_cgm_triagem_nf__osinfo_despesas") }}
-    WHERE nome_arquivo IN (
-      SELECT DISTINCT nome_arquivo
-      FROM {{ ref("core_cgm_triagem_nf__extracao_pagina") }}
-    )
-    GROUP BY nome_arquivo, numero_documento_norm, cnpj_cpf_normalizado
+    FROM pares_match
+    GROUP BY nome_arquivo, pagina
   ),
 
   paginas_com_match_valor AS (
@@ -38,12 +90,11 @@ WITH
       p.valor_documento AS valor_total_documento,
       p.data_emissao_documento,
       p.tipo_documento_extracao AS tipo_documento,
-      COALESCE(od.id_documentos, []) AS id_documentos_correspondentes
-    FROM {{ ref("core_cgm_triagem_nf__extracao_pagina") }} p
-    LEFT JOIN od_agrupado od
-      ON od.nome_arquivo = p.nome_arquivo
-     AND od.numero_documento_norm = p.numero_nf_modelo_norm
-     AND od.cnpj_cpf_normalizado = p.cnpj_modelo_normalizado
+      COALESCE(pa.id_documentos, []) AS id_documentos_correspondentes
+    FROM paginas_base p
+    LEFT JOIN pares_agrupado pa
+      ON pa.nome_arquivo = p.nome_arquivo
+     AND pa.pagina = p.pagina
     WHERE p.numero_documento IS NOT NULL AND p.cnpj_emitente IS NOT NULL
   ),
 
@@ -87,8 +138,14 @@ WITH
       valor_total_documento AS valor_documento_extracao_ia,
       tipo_documento AS tipo_documento_extracao_ia,
       data_emissao_documento AS data_emissao_extracao_ia
-    FROM paginas_com_match_valor, UNNEST(id_documentos_correspondentes) AS id_documento
-    QUALIFY ROW_NUMBER() OVER (PARTITION BY id_documento ORDER BY pagina) = 1
+    FROM paginas_com_match_valor pv, UNNEST(pv.id_documentos_correspondentes) AS id_documento
+    INNER JOIN despesas_base db USING (id_documento)
+    QUALIFY ROW_NUMBER() OVER (
+      PARTITION BY id_documento
+      ORDER BY
+        ABS(db.valor_documento - pv.valor_total_documento) ASC NULLS LAST,
+        pv.pagina
+    ) = 1
   ),
 
   metricas_por_documento AS (
@@ -136,7 +193,7 @@ SELECT
   m.rank_declaracao,
   m.ids_grupo_nf
 FROM {{ ref("core_cgm_triagem_nf__osinfo_despesas") }} od
-LEFT JOIN match_por_declaracao_valor mval ON mval.id_documento = od.id_documento
+INNER JOIN match_por_declaracao_valor mval ON mval.id_documento = od.id_documento
 LEFT JOIN nf_extraida_sem_match_valor s ON s.nome_arquivo = od.nome_arquivo
 LEFT JOIN paginas_com_match_valor_por_arquivo c ON c.nome_arquivo = od.nome_arquivo
 LEFT JOIN extracao_por_documento epd ON epd.id_documento = od.id_documento

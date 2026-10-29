@@ -1,11 +1,19 @@
+{{
+  config(alias="despesas_classificada")
+}}
+
 WITH
   ep AS (
     SELECT
       nome_arquivo,
-      MAX(data_geracao) AS data_processamento,
-      MAX(timestamp_geracao) AS timestamp_processamento
+      versao_pipeline,
+      data_geracao AS data_processamento,
+      timestamp_geracao AS timestamp_processamento
     FROM {{ ref("core_cgm_triagem_nf__extracao_pagina") }}
-    GROUP BY nome_arquivo
+    QUALIFY ROW_NUMBER() OVER (
+      PARTITION BY nome_arquivo
+      ORDER BY timestamp_geracao DESC
+    ) = 1
   ),
 
   od AS (
@@ -36,14 +44,11 @@ WITH
       od.id_documento,
 
       (
-        od.cod_organizacao <> od.cod_unidade
-        AND epd.valor_pago_total_documento > (epd.valor_documento_extracao_ia + 1)
+        epd.valor_pago_total_documento > (epd.valor_documento_extracao_ia + 1)
         AND epd.ids_grupo_nf LIKE '%,%') AS apontamento_duplicidade_indicador,
       CASE
         WHEN
-          od.cod_organizacao <> od.cod_unidade
-          AND epd.valor_pago_total_documento > (epd.valor_documento_extracao_ia + 1)
-          AND epd.ids_grupo_nf LIKE '%,%'
+          epd.ids_grupo_nf LIKE '%,%'
           THEN epd.ids_grupo_nf
         ELSE NULL
         END AS apontamento_duplicidade_ids,
