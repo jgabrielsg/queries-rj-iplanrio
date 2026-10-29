@@ -59,6 +59,8 @@ WITH
 
       CASE
         WHEN epd.data_emissao_extracao_ia IS NULL THEN NULL
+        WHEN EXTRACT(YEAR FROM epd.data_emissao_extracao_ia) < 100 
+          THEN DATE_ADD(epd.data_emissao_extracao_ia, INTERVAL 2000 YEAR)
         WHEN bc.inicio_atividade_data IS NULL THEN NULL
         WHEN DATE(bc.inicio_atividade_data) > DATE(epd.data_emissao_extracao_ia)
           THEN TRUE
